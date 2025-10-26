@@ -1,0 +1,118 @@
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+import pandas as pd
+import numpy as np
+from src.data_preprocessing import DataPreprocessor
+from src.feature_selection import FeatureSelector
+from src.model_training import XGBoostTrainer
+from src.model_evaluation import ModelEvaluator
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def main():
+    """
+    Main analysis pipeline reproducing the methodology from the paper
+    """
+    logger.info("Starting analysis pipeline...")
+    
+    # Initialize components
+    preprocessor = DataPreprocessor()
+    feature_selector = FeatureSelector()
+    model_trainer = XGBoostTrainer()
+    
+    # Step 1: Load data
+    # Replace these paths with your actual data file paths
+    data_loaded = preprocessor.load_data(
+        train_path="../data/OAK_training_set.csv",
+        validation_path="../data/POPLAR_validation_set.csv", 
+        test_path="../data/local_test_set.csv"
+    )
+    
+    if not data_loaded:
+        logger.error("Failed to load data. Exiting.")
+        return
+    
+    # Step 2: Prepare features
+    feature_cols = preprocessor.prepare_features()
+    data_dict = preprocessor.get_data()
+    
+    # Step 3: Feature selection (Univariate + LASSO)
+    logger.info("Performing feature selection...")
+    selected_features, _ = feature_selector.select_features(
+        data_dict['X_train'], data_dict['y_train'], method='univariate'
+    )
+    
+    # Apply feature selection to all datasets
+    X_train_selected = data_dict['X_train'][selected_features]
+    X_val_selected = data_dict['X_val'][selected_features] 
+    X_test_selected = data_dict['X_test'][selected_features]
+    
+    logger.info(f"After feature selection: {X_train_selected.shape[1]} features")
+    
+    # Step 4: Hyperparameter tuning
+    logger.info("Starting hyperparameter tuning...")
+    best_model, best_params = model_trainer.hyperparameter_tuning(
+        X_train_selected, data_dict['y_train']
+    )
+    
+    # Step 5: Train final model
+    logger.info("Training final model...")
+    final_model = model_trainer.train_final_model(
+        X_train_selected, data_dict['y_train'], use_tuned_params=True
+    )
+    
+    # Step 6: Model evaluation
+    evaluator = ModelEvaluator(final_model, selected_features)
+    
+    # Predictions on all datasets
+    train_preds = model_trainer.predict_proba(X_train_selected)
+    val_preds = model_trainer.predict_proba(X_val_selected)
+    test_preds = model_trainer.predict_proba(X_test_selected)
+    
+    # Find optimal cutoff using validation set
+    optimal_cutoff, youden_index = evaluator.find_optimal_cutoff(
+        data_dict['y_val'], val_preds
+    )
+    logger.info(f"Optimal cutoff: {optimal_cutoff:.3f} (Youden index: {youden_index:.3f})")
+    
+    # Calculate metrics for all datasets
+    datasets = {
+        'Training': (data_dict['y_train'], train_preds),
+        'Validation': (data_dict['y_val'], val_preds), 
+        'Test': (data_dict['y_test'], test_preds)
+    }
+    
+    results = {}
+    for name, (y_true, y_pred) in datasets.items():
+        metrics = evaluator.calculate_metrics(y_true, y_pred, optimal_cutoff)
+        results[name] = metrics
+        logger.info(f"{name} set metrics: {metrics}")
+    
+    # Step 7: Generate plots and analyses
+    # ROC curves
+    evaluator.plot_roc_curve(data_dict['y_test'], test_preds, "Test Set", 
+                           "../results/test_roc_curve.png")
+    
+    # SHAP analysis
+    evaluator.perform_shap_analysis(X_test_selected, "../results/shap_analysis")
+    
+    # Note: For survival analysis, you would need PFS_time data
+    # evaluator.survival_analysis(test_preds, pfs_times, pfs_status, optimal_cutoff,
+    #                           "../results/km_curves.png")
+    
+    logger.info("Analysis pipeline completed successfully!")
+    
+    return {
+        'model': final_model,
+        'selected_features': selected_features, 
+        'optimal_cutoff': optimal_cutoff,
+        'results': results,
+        'best_params': best_params
+    }
+
+if __name__ == "__main__":
+    results = main()
