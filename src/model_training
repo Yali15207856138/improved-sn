@@ -1,0 +1,97 @@
+import xgboost as xgb
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, precision_score
+import numpy as np
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class XGBoostTrainer:
+    def __init__(self, random_state=42):
+        self.random_state = random_state
+        self.best_model = None
+        self.best_params = None
+        
+    def hyperparameter_tuning(self, X_train, y_train, cv_folds=5):
+        """
+        Perform hyperparameter tuning using grid search
+        """
+        # Define parameter grid based on your description
+        param_grid = {
+            'learning_rate': [0.01, 0.05, 0.1, 0.15, 0.2],
+            'max_depth': [3, 4, 5, 6, 7],
+            'subsample': [0.7, 0.8, 0.9, 1.0],
+            'reg_lambda': [0.1, 0.5, 1.0, 1.5, 2.0],
+            'n_estimators': [50, 100, 150]
+        }
+        
+        # Initialize XGBoost classifier
+        xgb_model = xgb.XGBClassifier(
+            booster='gbtree',
+            objective='binary:logistic',
+            random_state=self.random_state,
+            gamma=0.00,
+            reg_alpha=0.00
+        )
+        
+        # Grid search with cross-validation
+        kfold = StratifiedKFold(n_splits=cv_folds, shuffle=True, 
+                               random_state=self.random_state)
+        
+        grid_search = GridSearchCV(
+            estimator=xgb_model,
+            param_grid=param_grid,
+            scoring='roc_auc',
+            cv=kfold,
+            n_jobs=-1,
+            verbose=1
+        )
+        
+        logger.info("Starting hyperparameter tuning...")
+        grid_search.fit(X_train, y_train)
+        
+        self.best_params = grid_search.best_params_
+        self.best_model = grid_search.best_estimator_
+        
+        logger.info(f"Best parameters: {self.best_params}")
+        logger.info(f"Best CV AUC: {grid_search.best_score_:.4f}")
+        
+        return self.best_model, self.best_params
+    
+    def train_final_model(self, X_train, y_train, use_tuned_params=True):
+        """
+        Train final model with best parameters
+        """
+        if use_tuned_params and self.best_params:
+            final_params = self.best_params
+        else:
+            # Use the parameters from your paper description
+            final_params = {
+                'n_estimators': 100,
+                'learning_rate': 0.10,
+                'max_depth': 6,
+                'subsample': 0.80,
+                'reg_lambda': 1.00,
+                'gamma': 0.00,
+                'reg_alpha': 0.00,
+                'booster': 'gbtree',
+                'objective': 'binary:logistic',
+                'random_state': self.random_state
+            }
+        
+        self.final_model = xgb.XGBClassifier(**final_params)
+        self.final_model.fit(X_train, y_train)
+        
+        logger.info("Final model training completed")
+        
+        return self.final_model
+    
+    def predict_proba(self, X):
+        """
+        Make probability predictions
+        """
+        if self.final_model is None:
+            raise ValueError("Model not trained yet. Call train_final_model first.")
+        
+        return self.final_model.predict_proba(X)[:, 1]
